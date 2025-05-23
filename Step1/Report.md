@@ -5,8 +5,8 @@ AF_XDP è un'interfaccia socket che permette di raggiungere prestazioni di rete 
 Il seguente progetto si propone come un'implementazione del meccanismo ping-pong simile ad iperf ma con capacità di kernel bypass per ottenere misurazioni delle prestazioni.
 
 Componenti principali:
-    - **XDP Sender**: Un'applicazione per l'invio di pacchetti di test con analisi delle prestazioni di rete    
-    - **XDP Receiver**: Un'applicazione per la ricezione e risposta dei pacchetti 
+- **XDP Sender**: Un'applicazione per l'invio di pacchetti di test con analisi delle prestazioni di rete    
+- **XDP Receiver**: Un'applicazione per la ricezione e risposta dei pacchetti 
 
 Nello sviluppo dell'applicazione è stata utilizzata la libreria common/, la quale implementa funzioni utili per configurare l'ambiente XDP, gestire l'interazione con l'interfaccia AF_XDP e manipolare i pacchetti.
 <br/>

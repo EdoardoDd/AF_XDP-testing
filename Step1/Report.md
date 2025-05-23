@@ -8,16 +8,17 @@ Componenti principali:
 - **XDP Sender**: Un'applicazione per l'invio di pacchetti di test con analisi delle prestazioni di rete    
 - **XDP Receiver**: Un'applicazione per la ricezione e risposta dei pacchetti 
 
-Nello sviluppo dell'applicazione è stata utilizzata la libreria common/, la quale implementa funzioni utili per configurare l'ambiente XDP, gestire l'interazione con l'interfaccia AF_XDP e manipolare i pacchetti.
+Nello sviluppo dell'applicazione è stata utilizzata la libreria `common/`, la quale implementa funzioni utili per configurare l'ambiente XDP, gestire l'interazione con l'interfaccia AF_XDP e manipolare i pacchetti.
 <br/>
 
 ## Gestione della memoria in AF_XDP
-AF_XDP basa la sua efficienza su un modello di gestione della memoria unico che riduce drasticamente le copie e le transizioni tra kernel e spazio utente. Il componente fondamentale è l'UMEM (User Memory), un'area di memoria contigua allocata dall'applicazione e condivisa con il kernel. Questa memoria viene suddivisa in frame di dimensione fissa che fungono da contenitori per i pacchetti di rete.
+AF_XDP basa la sua efficienza su un modello di gestione della memoria che riduce drasticamente le copie e le transizioni tra kernel e spazio utente. Il componente fondamentale è l'**UMEM** (User Memory), un'area di memoria contigua allocata dall'applicazione e condivisa con il kernel. Questa memoria viene suddivisa in frame di dimensione fissa che fungono da contenitori per i pacchetti di rete.
 
-Il trasferimento dei pacchetti avviene attraverso quattro ring di descrittori che operano in modalità lock-free: i ring di ricezione (**RX**) e trasmissione (**TX**) contengono descrittori che puntano ai frame dell'UMEM, mentre i ring di riempimento (**FILL**) e completamento (**COMPLETION**) gestiscono il trasferimento di proprietà dei frame tra applicazione e kernel. Questa architettura permette l'implementazione di un modello a produttore-consumatore efficiente, dove il driver di rete può scrivere direttamente nella memoria utente (in modalità **zero-copy**) eliminando copie non necessarie.
+Il trasferimento dei pacchetti avviene attraverso quattro ring di descrittori che operano in modalità lock-free: i ring di ricezione (**RX**) e trasmissione (**TX**) contengono descrittori che puntano ai frame dell'UMEM, mentre i ring di riempimento (**FILL**) e completamento (**COMPLETION**) gestiscono il trasferimento del controllo dei frame tra applicazione e kernel. Questa architettura permette l'implementazione di un modello a produttore-consumatore efficiente, dove il driver di rete può scrivere direttamente nella memoria utente (in modalità **zero-copy**) eliminando copie non necessarie.
 
 La corretta configurazione dell'UMEM e la gestione efficiente dei frame sono cruciali per le prestazioni: dimensioni inadeguate del buffer o scarse strategie di riciclo dei frame possono limitare significativamente il throughput e aumentare la latenza. Il sistema supporta due modalità principali: **copy-mode**, compatibile con tutti i driver che supportano XDP, e **zero-copy**, che offre prestazioni massime ma richiede supporto specifico dal driver.
 
+Nel nostro ambiente di sviluppo è stato possibile sfruttare la modalità zero-copy.
 <br/>
 
 
@@ -28,7 +29,7 @@ Utilizzando AF_XDP, abbiamo implementato una soluzione completamente user-space 
 1. **Inizializzazione**:
    - Alloca un'area di memoria condivisa (UMEM) divisa in frame di dimensione fissa
    - Configura un socket AF_XDP associato all'interfaccia di rete
-   - Inizializza quattro ring di descrittori: TX, COMPLETION, RX e FILL
+   - Inizializza i quattro ring di descrittori: TX, COMPLETION, RX e FILL
 
 2. **Ciclo di trasmissione**:
    - Alloca frame UMEM dalla pool di frame liberi
@@ -41,7 +42,7 @@ Utilizzando AF_XDP, abbiamo implementato una soluzione completamente user-space 
 
 
 ##### Sender - Gestione della memoria e interazione con i ring
-1. **Ciclo di trasmissione (TX)** - Il Sender segue i seguenti passaggi:
+1. **Ciclo di trasmissione (TX)** - Nello specifico il Sender segue i seguenti passaggi:
     - Richiesta di un frame libero dall'UMEM utilizzando la funzione `xsk_alloc_umem_frame()`, che preleva un indirizzo dalla pool di frame disponibili.
     - Il contenuto del pacchetto viene scritto direttamente nella memoria UMEM utilizzando l'indirizzo allocato, includendo un timestamp e un numero di sequenza univoco.
     - Il Sender, attraverso `xsk_ring_prod__reserve()` ottiene uno slot nel ring TX, dove inserisce un descrittore contenente l'indirizzo del frame e la lunghezza del pacchetto.
@@ -83,7 +84,7 @@ Questo approccio elimina copie di memoria non necessarie, poiché il pacchetto v
 ##### Receiver - Gestione della memoria e interazione con i ring
 1. **Ciclo di ricezione (RX)** - La ricezione dei pacchetti "ping" segue i seguenti passaggi:
    - Il Receiver assicura che il ring FILL sia costantemente rifornito tramite `xsk_refill_fill_queue()`, chiamata sia all'inizio che alla fine di ogni ciclo di elaborazione per garantire la disponibilità di buffer per i pacchetti in arrivo.
-   - Attraverso `poll()` con timeout 1 secondo, il Receiver monitora l'arrivo di nuovi pacchetti in modo efficiente.
+   - Attraverso `poll()` con timeout 1 secondo, il Receiver monitora l'arrivo di nuovi pacchetti.
     - Tramite `xsk_ring_cons__peek()`, il Receiver verifica la presenza di pacchetti nel ring RX.
     - Per ogni pacchetto ricevuto, il Receiver utilizza `xsk_umem__get_data()` per accedere direttamente ai dati nella memoria UMEM senza copie intermedie.
     - Viene validata l'integrità del pacchetto e viene estratto il numero di sequenza.
@@ -98,14 +99,13 @@ Questo approccio elimina copie di memoria non necessarie, poiché il pacchetto v
       - La sottomissione tramite `xsk_ring_prod__submit()` che rende il descrittore visibile al kernel
 3. **Gestione della Completion Queue**:
    - Durante il processing dei pacchetti, ogni 8 pacchetti elaborati viene chiamata `complete_tx()` che esamina il ring COMPLETION per identificare i frame il cui invio è stato completato dal kernel.
-   - La funzione `complete_tx()` utilizza `xsk_ring_cons__peek()` per ottenere fino a 64 completion alla volta, ottimizzando le performance tramite elaborazione batch.
+   - La funzione `complete_tx()` utilizza `xsk_ring_cons__peek()` per ottenere fino a 64 completion alla volta.
    - I frame completati vengono restituiti alla pool di frame liberi tramite `xsk_free_umem_frame()`
    - Il contatore `outstanding_tx` viene decrementato per tenere traccia del numero di trasmissioni pendenti, permettendo di evitare l'esaurimento dei buffer TX e di ottimizzare la frequenza delle chiamate a `sendto()`.
 
 - Il receiver mantiene contatori per PING ricevuti, PONG inviati ed errori, con report periodici ogni 5 secondi che includono anche lo stato della memoria UMEM.
 - Al termine o in caso di segnali di interruzione, viene eseguito il cleanup completo di socket, UMEM e buffer, garantendo la liberazione di tutte le risorse allocate.
 
-Questa architettura permette al receiver di gestire efficacemente il traffico PING-PONG con latenze minime e throughput elevato, sfruttando appieno le capabilities di AF_XDP per il bypass del network stack del kernel.
 
 ## Test e Prestazioni
 Il componente Sender si occupa anche dell'analisi delle prestazioni, monitorando throughput, packet loss e latenza. 
@@ -140,3 +140,9 @@ Il componente Sender si occupa anche dell'analisi delle prestazioni, monitorando
 Il receiver presenta un chiaro limite tra i 5000 e i 6000 pps. Il collo di bottiglia è dovuto presumibilmente:
 - a una poco efficiente gestione dei ring buffer da parte del receiver 
 - overhead nell'elaborazione dei pacchetti nei loop di ricezione
+
+## TODO
+Rendere la gestione dei frame del Receiver più efficiente.
+
+- Controllare chiamate a `complete_tx()`
+

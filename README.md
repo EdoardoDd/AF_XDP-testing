@@ -1,26 +1,20 @@
-This repository contains tools and libraries for measuring and optimizing network performance using AF_XDP technology.
-## Repository Structure
+Questa repository contiene strumenti per misurare e ottimizzare le prestazioni di rete utilizzando la tecnologia AF_XDP.
 
-- **common**: Shared utility library for AF_XDP
-  - Provides common functions and data structures for working with AF_XDP sockets
-  - Includes helpers for managing UMEM, ring descriptors and zero-copy data transfer
+ ---
+ 
+### Struttura della repository:
+- Step1: Applicazione ping-pong (simile a iperf) basata su AF_XDP
+  - Strumento di benchmark per misurare latenza e throughput
+  - Implementa un modello client-server per test di comunicazione bidirezionale
 
-- **Step1**: Ping-pong application (similar to iperf) leveraging AF_XDP
-  - Benchmark tool for measuring latency and throughput
-  - Implements a client-server model for bidirectional communication testing
-
-
-
-## Prerequisites
-- Linux Kernel 5.x or higher with XDP support
-- XDP-compatible network card
-- Development libraries: libbpf, libxdp
+### Prerequisiti
+- Kernel Linux 5.x o superiore con supporto XDP
+- Scheda di rete compatibile con XDP
+- Librerie di sviluppo: libbpf, libxdp
 
 ## Step1 - Installation
  ```bash
-# Clone the repository
-git clone https://github.com//EdoardoDd/eBPF_testing.git
-cd Step1/receiver_AF_XDP # or sender_AF_XDP
+git clone https://github.com//EdoardoDd/AF_XDP-testing.git
 
 # Install dependencies
 ./setup.sh
@@ -30,22 +24,61 @@ make
  ```
 
 ## Step1 - Usage
-- Configure IP addresses and MAC addresses according to your machines
-### Sender
- ```bash
-sudo ./sender_user -d <interface> --filename <kern_file> -z -P -t <seconds> -s <packet_size> -r <rate>
-```
-### Receiver
- ```bash
-sudo ./receiver_user -d <interface> --filename <kern_file> -z -P -n
- ```
-Where:
+Opzioni disponibili
 
-- -d <interface>: Network interface to use
-- --filename <kern_file>: Kernel BPF program to load (e.g., sender_kern.o)
-- -z: Force zero-copy mode
-- -P: Run in performance test mode (print stats)
-- -N: Install XDP program in native mode
-- -t <seconds>: Run test duration in seconds (e.g., 5)
-- -s <packet_size>: Set packet size in bytes (e.g., 64)
-- -r <rate>: Set rate in packets per second (e.g., 20000)
+    -r, --rxprocess
+    Riceve e analizza i pacchetti in ingresso per metriche di performance (RTT, jitter, perdita)
+
+    -t, --txonly
+    Invia solo pacchetti, utile per test di throughput
+
+    -l, --echo
+    Modalità echo server: scambio MAC/IP e risposta con stesso payload
+
+    -x, --txrx
+    Test ping bidirezionale con misurazione del RTT
+
+    -i, --interface=n
+    Esegui sull’interfaccia n (predefinita: enp18s0)
+
+    -q, --queue=n
+    Usa la coda n (predefinita: 0)
+
+    -p, --poll
+    Usa la syscall poll() al posto del busy polling
+
+    -S, --xdp-skb
+    Usa la modalità XDP skb
+
+    -N, --xdp-native
+    Forza la modalità XDP nativa
+
+    -n, --interval=n
+    Intervallo di aggiornamento delle statistiche, in secondi (predefinito: 1)
+
+    -z, --zero-copy
+    Forza la modalità zero-copy
+
+    -c, --copy
+    Forza la modalità copy (predefinita)
+
+    -R, --rate=n
+    Specifica il rate di trasmissione in pacchetti al secondo (solo per modalità txrx)
+
+    -d, --duration=n
+    Esegui per n secondi (predefinito: infinito)
+
+Modalità operative
+
+    - rxprocess
+    Riceve pacchetti e calcola statistiche su RTT, jitter e perdite
+
+    - txonly
+    Trasmette pacchetti in modo continuo per test di throughput
+
+    - echo
+    Modalità echo server: scambia indirizzi MAC/IP e risponde al mittente
+
+    - txrx
+    Modalità ping client: invia richieste e misura i tempi di risposta
+

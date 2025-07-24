@@ -69,12 +69,12 @@ Con l'opzione `-p`, il programma usa la **syscall poll()**:
 - Latenza più alta ma efficienza risorse per ambienti multi-processo, consumo basso di CPU durante idle
 <!-- Approfondisci con magari un confronto dell'uso della CPU-->
 
-## Metriche Raccolte
+<!-- ## Metriche Raccolte
 - **Throughput**: pps e Mbps in TX/RX
 - **RTT**: Min/Avg/Max round trip time
 - **Jitter**: Variabilità del RTT
 - **Packet Loss**: Percentuale e conteggio
-- **Out-of-order**: Pacchetti fuori sequenza
+- **Out-of-order**: Pacchetti fuori sequenza -->
 
 
 ## Invio Pacchetti (TX)

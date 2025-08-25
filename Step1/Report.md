@@ -10,8 +10,6 @@ Flag:
 - `-S`: XDP-SKB mode
 - `-N`: XDP-native mode
 
-## Architettura del Sistema
-
 ### Modalità
 
 L'applicazione offre quattro modalità principali:

@@ -68,19 +68,19 @@ static __u32 prog_id;
 
 static uint32_t sequence_counter = 1;
 
-// Variabili per calcolo throughput
-static unsigned long start_time_nsecs = 0;
+// Variabili per calcolo throughput 
+static unsigned long active_time =0;
 static unsigned long total_received = 0;          
 static unsigned long total_sent = 0;              
-static unsigned long throughput_bytes_sent = 0;  		
-static unsigned long throughput_bytes_received = 0;
 
 // rtt e jitter
-static double avg_rtt_ms = 0.0;
-static unsigned long rtt_samples = 0;
-static double prev_rtt_ms = -1.0;
-static double jitter_sum = 0.0;
-static unsigned long jitter_samples = 0; 
+static uint64_t count_rtt = 0;
+static uint64_t total_rtt = 0;
+static uint64_t  last_rtt  = 0;
+static double jitter = 0.0;
+static double total_jitter = 0;
+static uint64_t min_rtt = UINT64_MAX;
+static uint64_t max_rtt = 0;
 
 struct xsk_umem_info {
         struct xsk_ring_prod fq;
@@ -105,25 +105,28 @@ static int num_socks;
 struct xsk_socket_info *xsks[MAX_SOCKS];
 
 static const char pkt_data[] =
-    "\x52\x54\x00\xbd\x25\x01"     // MAC dest rete virtuale (52:54:00:bd:25:01)
-    "\x52\x54\x00\x06\xfb\x6f"     // MAC src rete virtuale (52:54:00:06:fb:6f)
+    "\xc4\x70\xbd\x86\xb4\x8f"     // MAC dest
+    "\xc4\x70\xbd\x86\xb8\xb7"     // MAC src
     "\x08\x00"                     
     
     // IP HEADER
     "\x45\x00\x00\x2c"             
     "\x00\x00\x00\x00\x40\x11"     
     "\x00\x00"                      
-    "\xc0\xa8\x7b\x67"             // IP src:  192.168.123.103 (VM1)
-    "\xc0\xa8\x7b\x68"             // IP dest: 192.168.123.104 (VM2)
+    "\xc0\xa8\x7b\x65"             // IP src:  192.168.123.101 (VM1)
+    "\xc0\xa8\x7b\x66"             // IP dest: 192.168.123.102 (VM2)
     
     // UDP HEADER
-    "\x1f\x90\x1f\x90"             // Port 12345 → 67890 
+    "\x1f\x90\x1f\x90"             // Src Port 8080 → Dst Port 8080 
     "\x00\x18\x00\x00"             
     
-    // PAYLOAD (16 bytes)
-    "\x00\x00\x00\x01"             // Sequence 
-    "\x00\x00\x00\x00\x00\x00\x00\x00"  // Timestamp (aggiornato runtime)
-    "\x00\x00\x00\x01";            // Type = REQUEST
+    // PAYLOAD 
+    "\x00\x00\x00\x01"             // Seq
+    "\x00\x00\x00\x00\x00\x00\x00\x00"  // Timestamp 
+    "\x00\x00\x00\x01"            // Type = REQUEST
+
+    // PADDING)
+    "\x00\x00\x00\x00\x00\x00";
 
 
 #define PACKET_SIZE (sizeof(pkt_data) - 1)
@@ -202,10 +205,9 @@ static void print_benchmark(bool running)
 
 static void dump_stats(void)
 {
+        int i;
         unsigned long now = get_nsecs();
         long dt = now - prev_time;
-        int i;
-
         prev_time = now;
 
         for (i = 0; i < num_socks && xsks[i]; i++) {
@@ -216,6 +218,12 @@ static void dump_stats(void)
                          1000000000. / dt;
                 tx_pps = (xsks[i]->tx_npkts - xsks[i]->prev_tx_npkts) *
                          1000000000. / dt;
+
+                // Aggiorniamo statistiche globali per calcolo throughput
+                total_sent += tx_pps;
+                total_received += rx_pps;
+                if(rx_pps > 0 || tx_pps > 0)
+                        active_time += dt;
 
                 printf("\n sock%d@", i);
                 print_benchmark(false);
@@ -258,6 +266,33 @@ static void remove_xdp_program(void)
                 printf("program on interface changed, not removing\n");
 }
 
+static void update_rtt_jitter(struct payload *pl) {
+        uint64_t now = get_nsecs();
+        //uint64_t sent = ntohll(pl->timestamp);
+        uint64_t sent = pl->timestamp;
+        
+        if (sent == 0) {
+                return; 
+        }
+
+        uint64_t rtt = now - sent;
+        total_rtt += rtt;
+        count_rtt++;
+
+        if (rtt < min_rtt) min_rtt = rtt;
+        if (rtt > max_rtt) max_rtt = rtt;
+
+        if (last_rtt != 0) {
+                int64_t delta = (int64_t)rtt - (int64_t)last_rtt;
+                if (delta < 0) delta = -delta;
+                jitter += ((double)delta - jitter) / 16.0;
+        
+                total_jitter += jitter;
+        }
+
+        last_rtt = rtt;
+}
+
 static void int_exit(int sig)
 {
         struct xsk_umem *umem = xsks[0]->umem->umem;
@@ -266,19 +301,23 @@ static void int_exit(int sig)
 
         dump_stats();
         unsigned long now = get_nsecs();
-        double elapsed_sec = (now - start_time_nsecs) / 1e9;
 
         printf("\n=== THROUGHPUT STATISTICS ===\n");
-        printf("Pacchetti inviati/s:          %.3f Mpps\n", total_sent / (elapsed_sec * 1e6));
-        printf("Pacchetti ricevuti/s:         %.3f Mpps\n", total_received / (elapsed_sec * 1e6));
-        printf("Throughput inviato:           %.2f Mbps\n", (throughput_bytes_sent * 8) / (elapsed_sec * 1e6));
-        printf("Throughput ricevuto:          %.2f Mbps\n", (throughput_bytes_received * 8) / (elapsed_sec * 1e6));
-        if (rtt_samples > 0)
-                printf("RTT medio: %.3f ms (%lu campioni)\n", avg_rtt_ms, rtt_samples);
-
-        if (jitter_samples > 0)
-                printf("Jitter medio: %.3f ms (%lu transizioni)\n", jitter_sum / jitter_samples, jitter_samples);
+        double elapsed_sec = active_time / 1e9;
+        printf("Pacchetti inviati/s: %.3f Mpps\n", (total_sent / elapsed_sec) / 1e6);
+        printf("Pacchetti ricevuti/s: %.3f Mpps\n", (total_received / elapsed_sec) / 1e6);
+        printf("Throughput inviato: %.2f Mbps\n", (total_sent * PACKET_SIZE * 8.0) / (elapsed_sec * 1e6));
+        printf("Throughput ricevuto: %.2f Mbps\n", (total_received * PACKET_SIZE * 8.0) / (elapsed_sec * 1e6));
         
+        if (count_rtt != 0){
+                double avg_rtt = (double)total_rtt / count_rtt;
+                double avg_jitter = total_jitter / (count_rtt > 1 ? (count_rtt - 1) : 1);
+                printf("RTT medio   = %.3f ms\n", avg_rtt / 1.0e6);
+                printf("RTT minimo  = %.3f ms\n", min_rtt / 1.0e6);
+                printf("RTT massimo = %.3f ms\n", max_rtt / 1.0e6);
+                printf("Jitter medio = %.3f µs\n", avg_jitter / 1.0e3);
+        } 
+
         xsk_socket__delete(xsks[0]->xsk);
         (void)xsk_umem__delete(umem);
         remove_xdp_program();
@@ -429,7 +468,7 @@ static struct xsk_socket_info *xsk_configure_socket(struct xsk_umem_info *umem)
 static struct option long_options[] = {
         {"rxprocess", no_argument, 0, 'r'},
         {"txonly", no_argument, 0, 't'},
-        {"echo", no_argument, 0, 'l'},
+        {"echo", no_argument, 0, 'e'},
         {"txrx", no_argument, 0, 'x'},
         {"interface", required_argument, 0, 'i'},
         {"queue", required_argument, 0, 'q'},
@@ -450,7 +489,7 @@ static void usage(const char *prog)
 		"  Options:\n"
 		"  -r, --rxprocess      Process and analyze incoming packets for performance metrics\n"
 		"  -t, --txonly         Only send packets for throughput testing\n"
-		"  -l, --echo           Address swap + payload processing (echo server mode)\n"
+		"  -e, --echo           Address swap + payload processing (echo server mode)\n"
 		"  -x, --txrx           Bidirectional ping test with RTT measurement\n"
 		"  -i, --interface=n    Run on interface n (default: ens16np1)\n"
 		"  -q, --queue=n        Use queue n (default: 0)\n"
@@ -635,29 +674,10 @@ static void rx_process(struct xsk_socket_info *xsk)
                 u32 len = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx++)->len;
                 char *pkt = xsk_umem__get_data(xsk->umem->buffer, addr);
 
-                if (len >= 42 + sizeof(struct payload) && (is_response(pkt) || is_request(pkt))) {
-			struct payload *pl = (struct payload*)((char*)pkt + 42);
-			uint32_t seq = ntohl(pl->sequence);
-
-			throughput_bytes_received += PACKET_SIZE;
-			total_received++;             			
-
-                        // Calcolo RTT 
-                        unsigned long now = get_nsecs(); 
-                        unsigned long sent = be64toh(pl->timestamp); 
-                        double rtt_ms = (now - sent) / 1e6;
-
-                        rtt_samples++;
-                        avg_rtt_ms += (rtt_ms - avg_rtt_ms) / rtt_samples;
-
-                        // Calcolo Jitter 
-                        if (prev_rtt_ms >= 0.0) {
-                                double jitter = fabs(rtt_ms - prev_rtt_ms);
-                                jitter_sum += jitter;
-                                jitter_samples++;
-                        }
-                        prev_rtt_ms = rtt_ms;
-		}
+                 if(is_response(pkt)) {
+                        struct payload *pl = (struct payload*)((char*)pkt + 42);
+                        update_rtt_jitter(pl);
+                }
 
                 hex_dump(pkt, len, addr);
                 *xsk_ring_prod__fill_addr(&xsk->umem->fq, idx_fq++) = addr;
@@ -720,16 +740,12 @@ static void tx_only(struct xsk_socket_info *xsk)
 
                         for (i = 0; i < BATCH_SIZE; i++) {
                                 u64 frame_addr = (frame_nb + i) << XSK_UMEM__DEFAULT_FRAME_SHIFT;
-                                // Possibile overflow di tx_only se il numero di frame supera NUM_FRAMES
-                                //u64 frame_addr = ((frame_nb + i) % NUM_FRAMES) << XSK_UMEM__DEFAULT_FRAME_SHIFT;
 
 				void *pkt_buffer = xsk_umem__get_data(xsk->umem->buffer, frame_addr);
 				struct payload *pl = (struct payload *)(pkt_buffer + 42);
-                                update_timestamp(pkt_buffer);
-				pl->sequence = htonl(sequence_counter++);
+                                pl->timestamp = get_nsecs();
+				pl->sequence = sequence_counter++;
 
-/*                                 xsk_ring_prod__tx_desc(&xsk->tx, idx + i)->addr = frame_addr;
-                                xsk_ring_prod__tx_desc(&xsk->tx, idx + i)->len =sizeof(pkt_data) - 1 */;
                                 struct xdp_desc *desc = xsk_ring_prod__tx_desc(&xsk->tx, idx + i);
                                 desc->addr = frame_addr;
                                 desc->len =sizeof(pkt_data) - 1;
@@ -737,9 +753,6 @@ static void tx_only(struct xsk_socket_info *xsk)
 
                         xsk_ring_prod__submit(&xsk->tx, BATCH_SIZE);
                         xsk->outstanding_tx += BATCH_SIZE;
-
-                        total_sent += BATCH_SIZE;			 
-			throughput_bytes_sent += BATCH_SIZE * PACKET_SIZE;
 
                         frame_nb += BATCH_SIZE;
                         frame_nb %= NUM_FRAMES;
@@ -775,25 +788,6 @@ static void txrx(struct xsk_socket_info *xsk)
                 if (len >= 42 + sizeof(struct payload) && (is_response(pkt) || is_request(pkt))) {
 			struct payload *pl = (struct payload*)((char*)pkt + 42);
 			uint32_t seq = ntohl(pl->sequence);
-
-			throughput_bytes_received += PACKET_SIZE;
-			total_received++;             			
-
-                        // Calcolo RTT 
-                        unsigned long now = get_nsecs(); 
-                        unsigned long sent = be64toh(pl->timestamp); 
-                        double rtt_ms = (now - sent) / 1e6;
-
-                        rtt_samples++;
-                        avg_rtt_ms += (rtt_ms - avg_rtt_ms) / rtt_samples;
-
-                        // Calcolo Jitter 
-                        if (prev_rtt_ms >= 0.0) {
-                                double jitter = fabs(rtt_ms - prev_rtt_ms);
-                                jitter_sum += jitter;
-                                jitter_samples++;
-                        }
-                        prev_rtt_ms = rtt_ms;
 		}
             }
             
@@ -836,9 +830,6 @@ static void txrx(struct xsk_socket_info *xsk)
 		xsk_ring_prod__submit(&xsk->tx, BATCH_SIZE);
 		xsk->outstanding_tx += BATCH_SIZE;
 
-                total_sent += BATCH_SIZE;			 
-		throughput_bytes_sent += BATCH_SIZE * PACKET_SIZE;
-
                 frame_nb += BATCH_SIZE;
                 frame_nb %= NUM_FRAMES;	
 	}
@@ -877,8 +868,10 @@ static void echo_server(struct xsk_socket_info *xsk)
                         char *pkt = xsk_umem__get_data(xsk->umem->buffer, addr);
 
                         swap_addresses(pkt);
-			if (is_request(pkt)) 
-				convert_to_response(pkt);
+			if (is_request(pkt)){
+                                convert_to_response(pkt);
+                        }
+
 		
                         hex_dump(pkt, len, addr);
                         xsk_ring_prod__tx_desc(&xsk->tx, idx_tx)->addr = addr;
@@ -890,6 +883,7 @@ static void echo_server(struct xsk_socket_info *xsk)
 
                 xsk->rx_npkts += rcvd;
                 xsk->outstanding_tx += rcvd;
+
         }
 }
 
@@ -914,7 +908,6 @@ int main(int argc, char **argv)
         if (ret)
                 exit_with_error(ret);
 
-       /* Create sockets... */
         umem = xsk_configure_umem(bufs,
                                   NUM_FRAMES * XSK_UMEM__DEFAULT_FRAME_SIZE);
         xsks[num_socks++] = xsk_configure_socket(umem);
@@ -943,7 +936,6 @@ int main(int argc, char **argv)
                 exit_with_error(ret);
 
         prev_time = get_nsecs();
-        start_time_nsecs = prev_time;
 
         if (opt_bench == BENCH_RXPROCESS)
                 rx_process_all();

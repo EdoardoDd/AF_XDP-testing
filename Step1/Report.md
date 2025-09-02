@@ -131,7 +131,7 @@ Sul primo host, il meccanismo di trasmissione e ricezione è stato realizzato me
 Sul secondo host, invece, l’elaborazione e il forwarding dei pacchetti sono stati gestiti all’interno di un unico programma, così da sfruttare la cache locality derivante dall’uso della UMEM comune tra TX ring e RX ring.
 
 ### Prestazioni
-Un primo confronto delle performance è stato effettuato con il tool `iperf`. Questa misurazione fornisce un riferimento di base sulle capacità della rete quando si utilizza lo stack kernel standard, consentendo di quantificare l’eventuale miglioramento ottenuto con l’impiego di XDP e delle socket AF_XDP.
+Un primo confronto delle performance è stato effettuato con il tool `iperf`. Questa misurazione fornisce un riferimento sulle capacità della rete quando si utilizza lo stack kernel standard, consentendo di quantificare l’eventuale miglioramento ottenuto con l’impiego di XDP e delle socket AF_XDP.
 
 Poiché iperf classico effettua uno scambio dati `one-way`, il primo passo del confronto riguarda le prestazioni di trasmissione tra il programma XDP in modalità sender sulla prima macchina e quello in modalità receiver sulla seconda, così da avere un parallelismo diretto con il modello di invio puro.
 I programmi XDP sono stati eseguiti in modalità `zero-copy` e `busy-polling`, utilizzando pacchetti della dimensione di 64 byte e la durata di esecuzione del test è di 10 secondi. Nel confronto con il tool `iperf` va considerato che, di default, la dimensione dei pacchetti utilizzati non è di 64 byte, ma tipicamente di 1460 byte per UDP. Provando a impostare la dimensione dei pacchetti alla stessa del nostro test (`iperf -l 64`), si sono tuttavia riscontrate prestazioni deludenti (63,3 Mbits/sec), principalmente a causa dell’elevato numero di pacchetti piccoli da gestire, che ne limita l’efficienza del trasferimento. 
@@ -142,7 +142,7 @@ I programmi XDP sono stati eseguiti in modalità `zero-copy` e `busy-polling`, u
 
 Possiamo notare come nella modalità di trasmissione il programma XDP raggiunga una media di 4,98 Gbits/sec mentre iperf si limita a 4.08 Gbits/sec. Invece nel secondo host nella modalità di ricezione la media delle prestazioni è più simile: 3,46 Gbits/sec per AF_XDP e 3,48 Gbits/sec per `iperf`.
 
-Successivamente, al fine di considerare un confronto più pertinente con il meccanismo di request-response del nostro programma XDP consideriamo la modalità bidirezionale di `iperf`: pur non essendo pienamente equivalente a un modello ping-pong (in quanto genera due flussi indipendenti, uno per direzione, e non uno scambio sequenziale), consente comunque di valutare in modo comparativo le capacità di throughput bidirezionale.
+Successivamente, al fine di considerare un confronto più pertinente con il meccanismo di request-response del nostro programma XDP consideriamo la modalità bidirezionale di `iperf`: `iperf -d` pur non essendo pienamente equivalente a un modello ping-pong (in quanto genera due flussi indipendenti, uno per direzione, e non uno scambio sequenziale), consente comunque di valutare in modo comparativo le capacità di throughput bidirezionale.
 <p align="center">
   <img src="Graphs/image2.png" alt="Figure 2" width="400">
   <img src="Graphs/image3.png" alt="Figure 3" width="246">
